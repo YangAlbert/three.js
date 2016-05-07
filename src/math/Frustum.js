@@ -103,20 +103,36 @@ THREE.Frustum.prototype = {
 		var center = sphere.center;
 		var negRadius = - sphere.radius;
 
+		var innerCount = 0;
 		for ( var i = 0; i < 6; i ++ ) {
 
 			var distance = planes[ i ].distanceToPoint( center );
-
 			if ( distance < negRadius ) {
-
 				return false;
-
 			}
-
 		}
 
 		return true;
+	},
 
+	// -1: outside; 0: intersect; 1: inside;
+	intersectsSphereStrict: function ( sphere ) {
+		var planes = this.planes;
+		var center = sphere.center;
+		var negRadius = - sphere.radius;
+
+		var innerCount = 0;
+		for ( var i = 0; i < 6; i ++ ) {
+			var distance = planes[ i ].distanceToPoint( center );
+			if ( distance < negRadius ) {
+				return -1;
+			}
+			else if (distance > sphere.radius) {
+				innerCount++;
+			}
+		}
+
+		return innerCount == 6 ? 1 : 0;
 	},
 
 	intersectsBox: function () {

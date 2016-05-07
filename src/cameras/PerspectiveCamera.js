@@ -18,6 +18,8 @@ THREE.PerspectiveCamera = function ( fov, aspect, near, far ) {
 	this.near = near !== undefined ? near : 0.1;
 	this.far = far !== undefined ? far : 2000;
 
+	this.frustumPlanes = [];
+
 	this.updateProjectionMatrix();
 
 };
@@ -154,3 +156,74 @@ THREE.PerspectiveCamera.prototype.toJSON = function ( meta ) {
 	return data;
 
 };
+
+THREE.PerspectiveCamera.prototype.UpdateFrustumPlanes = function() {
+	var worldPos = this.position.clone().applyMatrix4(this.matrixWorld);
+    var dir = new THREE.Vector3(0, 0, -1);
+    dir.transformDirection(this.matrixWorld);
+
+    var halfFovTan = Math.tan(this.fov * 0.5);
+    var nearCenter = worldPos.clone().add(dir.clone().multiplyScalar(this.near));
+    
+    var verticalDir = new THREE.Vector3(0, 1, 0);
+    verticalDir.transformDirection(this.matrixWorld);
+    var verticalLen = this.near * halfFovTan;
+    var nearVertVec = verticalDir.clone().multiplyScalar(verticalLen);
+
+    var horznDir = new THREE.Vector3(1, 0, 0);
+    horznDir.transformDirection(this.matrixWorld);
+    var horznLen = verticalLen / this.aspect;
+    var nearHornVec = horznDir.clone().multiplyScalar(horznLen);
+
+    var nlt = nearCenter.clone().sub(nearHornVec).add(nearVertVec);
+    var nlb = nearCenter.clone().sub(nearHornVec).sub(nearVertVec);
+    var nrt = nearCenter.clone().add(nearHornVec).add(nearVertVec);
+    var nrb = nearCenter.clone().add(nearHornVec).sub(nearVertVec);
+
+    var farCenter = worldPos.clone().add(dir.clone().multiplyScalar(this.far));
+    verticalLen = this.far * halfFovTan;
+    var farVertVec = verticalDir.clone().multiplyScalar(verticalLen);
+
+    horznLen = verticalLen / this.aspect;
+    var farHornVec = horznDir.clone().multiplyScalar(horznLen);
+
+    var flt = farCenter.clone().sub(farHornVec).add(farVertVec);
+    var flb = farCenter.clone().sub(farHornVec).sub(farVertVec);
+    var frt = farCenter.clone().add(farHornVec).add(farVertVec);
+    var frb = farCenter.clone().add(farHornVec).sub(farVertVec);
+
+    this.frustumPlanes.length = 0;
+
+    var plane;
+    // near plane.
+    plane = new THREE.Plane();
+    plane.setFromCoplanarPoints(nrb, nlb, nlt);
+    this.frustumPlanes.push(plane);
+
+    // left.
+    plane = new THREE.Plane();
+    plane.setFromCoplanarPoints(nlb, flb, flt);
+    this.frustumPlanes.push(plane);
+
+    // right.
+    plane = new THREE.Plane();
+    plane.setFromCoplanarPoints(frb, nrb, nrt);
+    this.frustumPlanes.push(plane);
+
+    // top.
+    plane = new THREE.Plane();
+    plane.setFromCoplanarPoints(nrt, nlt, flt);
+    this.frustumPlanes.push(plane);
+
+    // bottom.
+    plane = new THREE.Plane();
+    plane.setFromCoplanarPoints(flb, nlb, nrb);
+    this.frustumPlanes.push(plane);
+
+    // far.
+    plane = new THREE.Plane();
+    plane.setFromCoplanarPoints(flt, flb, frb);
+    this.frustumPlanes.push(plane);
+
+    return this.frustumPlanes;
+}
