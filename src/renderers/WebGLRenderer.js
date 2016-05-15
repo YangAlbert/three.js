@@ -152,6 +152,11 @@ THREE.WebGLRenderer = function(parameters) {
 
 		};
 
+		_infoLod = {
+			hideObject: 0,
+			hideTriangle: 0,
+		}
+
 	this.info = {
 
 		render: _infoRender,
@@ -1125,10 +1130,17 @@ THREE.WebGLRenderer = function(parameters) {
 		sprites.length = 0;
 		lensFlares.length = 0;
 
+		// clear lod info.
+		_infoLod.hideObject = 0;
+		_infoLod.hideTriangle = 0;
+
 		if (scene.octree instanceof THREE.Octree) {
 			projectOctree(scene.octree.root, camera);
 		}
-		projectObject(scene, camera, true);
+		projectObject(scene, camera, false);
+
+		console.log('LOD hide object: ' + _infoLod.hideObject);
+		console.log('LOD hide tirangle: ' + _infoLod.hideTriangle);
 
 		opaqueObjects.length = opaqueObjectsLastIndex + 1;
 		transparentObjects.length = transparentObjectsLastIndex + 1;
@@ -1292,6 +1304,54 @@ THREE.WebGLRenderer = function(parameters) {
 		}
 	}
 
+	function ProjectionToViewport(v) {
+		var vp = new THREE.Vector2(v.x, v.y);
+		vp.addScalar(1).multiplyScalar(0.5);
+		vp.x *= _width;
+		vp.y *= _height;
+
+		return vp;
+	}
+
+	function GetLodLevel(object, geometry, camera) {
+		object.updateMatrixWorld(false);
+		var sphere = geometry.boundingSphere.clone();
+		sphere.applyMatrix4(object.matrixWorld);
+
+		var rightPt = new THREE.Vector3(1, 0, 0);
+		rightPt.transformDirection(camera.matrixWorld).multiplyScalar(sphere.radius).add(sphere.center);
+		rightPt.applyProjection(_projScreenMatrix);
+
+		var centerPt = sphere.center.applyProjection(_projScreenMatrix);
+
+		centerPt = ProjectionToViewport(centerPt);
+		rightPt = ProjectionToViewport(rightPt);
+
+		var lod = 0;
+		var projSqrLen = centerPt.sub(rightPt).lengthSq();
+		if (projSqrLen < 16.0) {
+			_infoLod.hideObject ++;
+			if (geometry.index != undefined) {
+				_infoLod.hideTriangle += geometry.index.count / 3;
+			}
+			else {
+				_infoLod.hideTriangle += geometry.position.count / 9;
+			}
+			lod = -1;
+		}
+		else if (projSqrLen < 256.0) {		// 16 * 16
+			lod = 2;
+		}
+		else if (projSqrLen < 4096.0) {		// 64 * 64
+			lod = 1;
+		}
+		else {
+			lod = 0;
+		}
+
+		return lod;
+	}
+
 	function projectObject(object, camera, enableCull) {
 
 		if (object.visible === false) return;
@@ -1347,6 +1407,20 @@ THREE.WebGLRenderer = function(parameters) {
 						}
 
 						var geometry = objects.update(object);
+
+						if (object instanceof THREE.Mesh) {
+							var lod = GetLodLevel(object, geometry, camera);
+							if (lod < 0) {
+								return;
+							}
+							// else if (geometry.lod != lod) {
+							// 	var geo = geometryMgr.getGeometry(geometry.meshId, lod);
+							// 	if (geo != undefined) {
+							// 		object.geometry = geo;
+							// 		geometry = geo;
+							// 	}
+							// }
+						}
 
 						if (material instanceof THREE.MultiMaterial) {
 
@@ -2698,9 +2772,12 @@ THREE.WebGLRenderer = function(parameters) {
 				var uniforms = lightCache.get(light);
 
 				uniforms.color.copy(light.color).multiplyScalar(light.intensity);
-				uniforms.direction.setFromMatrixPosition(light.matrixWorld);
-				_vector3.setFromMatrixPosition(light.target.matrixWorld);
-				uniforms.direction.sub(_vector3);
+				// uniforms.direction.setFromMatrixPosition(light.matrixWorld);
+				// _vector3.setFromMatrixPosition(light.target.matrixWorld);
+				// _vector3.setFromMatrixPosition(light.matrixWorld);
+				// uniforms.direction.setFromMatrixPosition(light.target.matrixWorld);
+				uniforms.direction.copy(light.direction).multiplyScalar(-1.0);
+				uniforms.direction.transformDirection(light.matrixWorld);
 				uniforms.direction.transformDirection(viewMatrix);
 
 				uniforms.shadow = light.castShadow;
