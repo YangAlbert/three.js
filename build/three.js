@@ -26220,10 +26220,10 @@ THREE.WebGLRenderer = function(parameters) {
 		if (scene.octree instanceof THREE.Octree) {
 			projectOctree(scene.octree.root, camera);
 		}
-		projectObject(scene, camera, false);
+		projectObject(scene, camera, true);
 
-		console.log('LOD hide object: ' + _infoLod.hideObject);
-		console.log('LOD hide tirangle: ' + _infoLod.hideTriangle);
+		// console.log('LOD hide object: ' + _infoLod.hideObject);
+		// console.log('LOD hide tirangle: ' + _infoLod.hideTriangle);
 
 		opaqueObjects.length = opaqueObjectsLastIndex + 1;
 		transparentObjects.length = transparentObjectsLastIndex + 1;
@@ -26387,57 +26387,9 @@ THREE.WebGLRenderer = function(parameters) {
 		}
 	}
 
-	function ProjectionToViewport(v) {
-		var vp = new THREE.Vector2(v.x, v.y);
-		vp.addScalar(1).multiplyScalar(0.5);
-		vp.x *= _width;
-		vp.y *= _height;
-
-		return vp;
-	}
-
-	function GetLodLevel(object, geometry, camera) {
-		object.updateMatrixWorld(false);
-		var sphere = geometry.boundingSphere.clone();
-		sphere.applyMatrix4(object.matrixWorld);
-
-		var rightPt = new THREE.Vector3(1, 0, 0);
-		rightPt.transformDirection(camera.matrixWorld).multiplyScalar(sphere.radius).add(sphere.center);
-		rightPt.applyProjection(_projScreenMatrix);
-
-		var centerPt = sphere.center.applyProjection(_projScreenMatrix);
-
-		centerPt = ProjectionToViewport(centerPt);
-		rightPt = ProjectionToViewport(rightPt);
-
-		var lod = 0;
-		var projSqrLen = centerPt.sub(rightPt).lengthSq();
-		if (projSqrLen < 16.0) {
-			_infoLod.hideObject ++;
-			if (geometry.index != undefined) {
-				_infoLod.hideTriangle += geometry.index.count / 3;
-			}
-			else {
-				_infoLod.hideTriangle += geometry.position.count / 9;
-			}
-			lod = -1;
-		}
-		else if (projSqrLen < 256.0) {		// 16 * 16
-			lod = 2;
-		}
-		else if (projSqrLen < 4096.0) {		// 64 * 64
-			lod = 1;
-		}
-		else {
-			lod = 0;
-		}
-
-		return lod;
-	}
-
 	function projectObject(object, camera, enableCull) {
 
-		if (object.visible === false) return;
+		if (object.visible === false || object.lodHide === true) return;
 
 		if (object.layers.test(camera.layers)) {
 
@@ -26490,20 +26442,6 @@ THREE.WebGLRenderer = function(parameters) {
 						}
 
 						var geometry = objects.update(object);
-
-						if (object instanceof THREE.Mesh) {
-							var lod = GetLodLevel(object, geometry, camera);
-							if (lod < 0) {
-								return;
-							}
-							// else if (geometry.lod != lod) {
-							// 	var geo = geometryMgr.getGeometry(geometry.meshId, lod);
-							// 	if (geo != undefined) {
-							// 		object.geometry = geo;
-							// 		geometry = geo;
-							// 	}
-							// }
-						}
 
 						if (material instanceof THREE.MultiMaterial) {
 
