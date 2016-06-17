@@ -13,6 +13,7 @@ THREE.Camera = function () {
 	this.matrixWorldInverse = new THREE.Matrix4();
 	this.projectionMatrix = new THREE.Matrix4();
 
+	this.dirty = false;		// checked by the renderer.
 };
 
 THREE.Camera.prototype = Object.create( THREE.Object3D.prototype );

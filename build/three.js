@@ -16707,6 +16707,7 @@ THREE.Camera = function () {
 	this.matrixWorldInverse = new THREE.Matrix4();
 	this.projectionMatrix = new THREE.Matrix4();
 
+	this.dirty = false;		// checked by the renderer.
 };
 
 THREE.Camera.prototype = Object.create( THREE.Object3D.prototype );
@@ -23377,6 +23378,7 @@ THREE.Scene = function () {
 
 	this.autoUpdate = true; // checked by the renderer
 
+	this.dirty = false;	// checked by the renderer.
 };
 
 THREE.Scene.prototype = Object.create( THREE.Object3D.prototype );
@@ -25264,7 +25266,7 @@ THREE.WebGLRenderer = function(parameters) {
 			preserveDrawingBuffer: _preserveDrawingBuffer
 		};
 
-		_gl = _context || _canvas.getContext('webgl', attributes) || _canvas.getContext('experimental-webgl', attributes);
+		_gl = _context || _canvas.getContext('webgl2', attributes) || _canvas.getContext('webgl', attributes) || _canvas.getContext('experimental-webgl', attributes);
 
 		if (_gl === null) {
 
@@ -25317,6 +25319,51 @@ THREE.WebGLRenderer = function(parameters) {
 	var indexedBufferRenderer = new THREE.WebGLIndexedBufferRenderer(_gl, extensions, _infoRender);
 
 	this.octree = null;
+
+	// batch rendering settings.
+	this.targetFps = 20;
+	var _frameFinished = true;
+	var _batchRenderTarget = new THREE.WebGLRenderTarget(32, 32, {stencilBuffer: false});
+	var _batchRQIndex = 0;
+	var _batchStartTime = 0;
+	var _materialScreen = new THREE.ShaderMaterial({
+		uniforms: {
+			tDiffuse: {
+				type: "t",
+				value: _batchRenderTarget.texture
+			}
+		},
+		vertexShader: "varying vec2 vUv;	\
+								\
+            void main() {		\
+                vUv = uv;		\
+                gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );	\
+            }",
+
+		fragmentShader: "varying vec2 vUv;				\
+            uniform sampler2D tDiffuse;		\
+            								\
+            void main() {					\
+    			gl_FragColor = texture2D( tDiffuse, vUv );	\
+            }",
+
+		depthWrite: false,
+		depthTest: false,
+		side: THREE.DoubleSide,
+	});
+
+
+	var _plane = new THREE.PlaneBufferGeometry(1, 1);
+	var _quad = new THREE.Mesh(_plane, _materialScreen);
+	_quad.position.z = -100;
+
+	var _testBox = new THREE.PlaneBufferGeometry(1, 1);
+	var _testMat = new THREE.MeshBasicMaterial({color: 0xff0000, depthTest: false, depthWrite: false, side: THREE.DoubleSide});
+	var _testObj = new THREE.Mesh(_testBox, _testMat);
+
+	var _batchCamera = new THREE.OrthographicCamera(-0.5, 0.5, -0.5, 0.5, -1000, 1000);
+	_batchCamera.position.z = 100;
+	_batchCamera.lookAt(new THREE.Vector3(0, 0, 0));
 
 	//
 
@@ -25477,6 +25524,9 @@ THREE.WebGLRenderer = function(parameters) {
 
 		this.setViewport(0, 0, width, height);
 
+		// update batch render target.
+		_batchRenderTarget = new THREE.WebGLRenderTarget(width, height, {stencilBuffer: false});
+		_materialScreen.uniforms.tDiffuse.value = _batchRenderTarget.texture;
 	};
 
 	this.setViewport = function(x, y, width, height) {
@@ -26184,139 +26234,160 @@ THREE.WebGLRenderer = function(parameters) {
 
 		}
 
+		if (!(scene.dirty || camera.dirty) && _frameFinished && _this.targetFps > 0) {
+			// no need to render, return directly.
+			return ;
+		}
+
 		var fog = scene.fog;
+		var overrideMaterial = scene.overrideMaterial ? scene.overrideMaterial : undefined;
 
-		// reset caching for this frame
+		// start time counting.
+		_batchStartTime = Date.now();
 
-		_currentGeometryProgram = '';
-		_currentMaterialId = -1;
-		_currentCamera = null;
+		// new frame.
+		if (scene.dirty || camera.dirty || _this.targetFps == 0) {
+			// reset caching for this frame
 
-		// update scene graph
+			_currentGeometryProgram = '';
+			_currentMaterialId = -1;
+			_currentCamera = null;
 
-		if (scene.autoUpdate === true) scene.updateMatrixWorld();
+			// update scene graph
+			if (scene.autoUpdate === true) scene.updateMatrixWorld();
 
-		// update camera matrices and frustum
+			// update camera matrices and frustum
+			if (camera.parent === null) camera.updateMatrixWorld();
 
-		if (camera.parent === null) camera.updateMatrixWorld();
+			camera.matrixWorldInverse.getInverse(camera.matrixWorld);
 
-		camera.matrixWorldInverse.getInverse(camera.matrixWorld);
+			_projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+			_frustum.setFromMatrix(_projScreenMatrix);
 
-		_projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-		_frustum.setFromMatrix(_projScreenMatrix);
+			lights.length = 0;
 
-		lights.length = 0;
+			opaqueObjectsLastIndex = -1;
+			transparentObjectsLastIndex = -1;
 
-		opaqueObjectsLastIndex = -1;
-		transparentObjectsLastIndex = -1;
+			if (scene.octree instanceof THREE.Octree) {
+				projectOctree(scene.octree.root, camera);
+			}
+			projectObject(scene, camera, true);
 
-		sprites.length = 0;
-		lensFlares.length = 0;
+			opaqueObjects.length = opaqueObjectsLastIndex + 1;
+			transparentObjects.length = transparentObjectsLastIndex + 1;
 
-		// clear lod info.
-		_infoLod.hideObject = 0;
-		_infoLod.hideTriangle = 0;
+			if (_this.sortObjects === true) {
 
-		if (scene.octree instanceof THREE.Octree) {
-			projectOctree(scene.octree.root, camera);
-		}
-		projectObject(scene, camera, true);
-
-		// console.log('LOD hide object: ' + _infoLod.hideObject);
-		// console.log('LOD hide tirangle: ' + _infoLod.hideTriangle);
-
-		opaqueObjects.length = opaqueObjectsLastIndex + 1;
-		transparentObjects.length = transparentObjectsLastIndex + 1;
-
-		if (_this.sortObjects === true) {
-
-			opaqueObjects.sort(painterSortStable);
-			transparentObjects.sort(reversePainterSortStable);
-
-		}
-
-		setupLights(lights, camera);
-
-		//
-
-		shadowMap.render(scene, camera);
-
-		//
-
-		_infoRender.calls = 0;
-		_infoRender.vertices = 0;
-		_infoRender.faces = 0;
-		_infoRender.points = 0;
-
-		if (renderTarget === undefined) {
-
-			renderTarget = null;
-
-		}
-
-		this.setRenderTarget(renderTarget);
-
-		if (this.autoClear || forceClear) {
-
-			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
-
-		}
-
-		//
-
-		if (scene.overrideMaterial) {
-
-			var overrideMaterial = scene.overrideMaterial;
-
-			renderObjects(opaqueObjects, camera, fog, overrideMaterial);
-			renderObjects(transparentObjects, camera, fog, overrideMaterial);
-
-		} else {
-
-			// opaque pass (front-to-back order)
-
-			state.setBlending(THREE.NoBlending);
-			renderObjects(opaqueObjects, camera, fog);
-
-			// transparent pass (back-to-front order)
-
-			renderObjects(transparentObjects, camera, fog);
-
-		}
-
-		// custom render plugins (post pass)
-
-		spritePlugin.render(scene, camera);
-		lensFlarePlugin.render(scene, camera, _currentViewport);
-
-		// Generate mipmap if we're using any kind of mipmap filtering
-
-		if (renderTarget) {
-
-			var texture = renderTarget.texture;
-
-			if (texture.generateMipmaps && isPowerOfTwo(renderTarget) &&
-				texture.minFilter !== THREE.NearestFilter &&
-				texture.minFilter !== THREE.LinearFilter) {
-
-				updateRenderTargetMipmap(renderTarget);
+				opaqueObjects.sort(painterSortStable);
+				transparentObjects.sort(reversePainterSortStable);
 
 			}
 
+			setupLights(lights, camera);
+
+			//
+			shadowMap.render(scene, camera);
+
+			//
+			_infoRender.calls = 0;
+			_infoRender.vertices = 0;
+			_infoRender.faces = 0;
+			_infoRender.points = 0;
+
+			if (_this.targetFps > 0) {
+				renderTarget = _batchRenderTarget;
+			}
+			else {
+				renderTarget = null;
+			}
+
+			this.setRenderTarget(renderTarget);
+
+			if (this.autoClear || forceClear) {
+				this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
+			}
+
+			// init batch rendering flags.
+			_batchRQIndex = 0;
+			_frameFinished = false;
+
+			// start rendering render queues.
+			batchRendering(camera, fog, overrideMaterial);
+
+			// Ensure depth buffer writing is enabled so it can be cleared on next render
+			state.setDepthTest(true);
+			state.setDepthWrite(true);
+			state.setColorWrite(true);
+
+			// clear scene & camera dirty
+			scene.dirty = camera.dirty = false;
+		}
+		else if (_frameFinished === false) {
+			this.setRenderTarget(_batchRenderTarget);
+			batchRendering(camera, fog, overrideMaterial);
 		}
 
-		// Ensure depth buffer writing is enabled so it can be cleared on next render
-
-		state.setDepthTest(true);
-		state.setDepthWrite(true);
-		state.setColorWrite(true);
+		if (_this.targetFps > 0) {
+			renderFboToBackBuffer(_batchRenderTarget);
+		}
 
 		// _gl.finish();
 
-	};
+	}
+
+	function batchRendering(camera, fog, overrideMaterial) {
+		if (_batchRQIndex < opaqueObjects.length) {
+			_batchRQIndex += renderObjects(opaqueObjects, _batchRQIndex, camera, fog, overrideMaterial);
+			if (_batchRQIndex < opaqueObjects.length) {
+				_frameFinished = false;
+				return ;
+			}
+		}
+
+		var startIdx = _batchRQIndex - opaqueObjects.length;
+		var count = renderObjects(transparentObjects, startIdx, camera, fog, overrideMaterial);
+		if (startIdx + count < transparentObjects.length) {
+			_batchRQIndex += count;
+			_frameFinished = false;
+		}
+		else {
+			_frameFinished = true;
+		}
+	}
+
+	function renderFboToBackBuffer(fbo) {
+		var geom = objects.update(_quad);
+
+		var renderItem = {
+			id: _quad.id,
+			object: _quad,
+			geometry: geom,
+			material: _materialScreen,
+			z: -100,
+			group: null
+		};
+
+		// var geom = objects.update(_testObj);
+
+		// var renderItem = {
+		// 	id: _testObj.id,
+		// 	object: _testObj,
+		// 	geometry: geom,
+		// 	material: _testObj.material,
+		// 	z: -100,
+		// 	group: null
+		// };
+
+		_batchCamera.updateMatrixWorld();
+
+		_this.setRenderTarget(null);
+		_this.clear();
+
+		renderObjectItem(renderItem, _batchCamera);
+	}
 
 	function pushRenderItem(object, geometry, material, z, group) {
-
 		var array, index;
 
 		// allocate the next position in the appropriate array
@@ -26485,42 +26556,50 @@ THREE.WebGLRenderer = function(parameters) {
 
 	}
 
-	function renderObjects(renderList, camera, fog, overrideMaterial) {
-
-		for (var i = 0, l = renderList.length; i < l; i++) {
+	function renderObjects(renderList, startIdx, camera, fog, overrideMaterial) {
+		var count = 0;
+		for (var i = startIdx, l = renderList.length; i < l; i++, ++count) {
 
 			var renderItem = renderList[i];
+			renderObjectItem(renderItem,  camera, fog, overrideMaterial)
 
-			var object = renderItem.object;
-			var geometry = renderItem.geometry;
-			var material = overrideMaterial === undefined ? renderItem.material : overrideMaterial;
-			var group = renderItem.group;
-
-			object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
-			object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
-
-			if (object instanceof THREE.ImmediateRenderObject) {
-
-				setMaterial(material);
-
-				var program = setProgram(camera, fog, material, object);
-
-				_currentGeometryProgram = '';
-
-				object.render(function(object) {
-
-					_this.renderBufferImmediate(object, program, material);
-
-				});
-
-			} else {
-
-				_this.renderBufferDirect(camera, fog, geometry, material, object, group);
-
+			var tm = Date.now();
+			if (this.targetFps > 0 && tm - _batchStartTime > 1.0 / _this.targetFps) {
+				break;
 			}
-
 		}
 
+		return count;
+	}
+
+	function renderObjectItem(renderItem, camera, fog, overrideMaterial) {
+		var object = renderItem.object;
+		var geometry = renderItem.geometry;
+		var material = overrideMaterial === undefined ? renderItem.material : overrideMaterial;
+		var group = renderItem.group;
+
+		object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
+		object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
+
+		if (object instanceof THREE.ImmediateRenderObject) {
+
+			setMaterial(material);
+
+			var program = setProgram(camera, fog, material, object);
+
+			_currentGeometryProgram = '';
+
+			object.render(function(object) {
+
+				_this.renderBufferImmediate(object, program, material);
+
+			});
+
+		} else {
+
+			_this.renderBufferDirect(camera, fog, geometry, material, object, group);
+
+		}
 	}
 
 	function initMaterial(material, fog, object) {

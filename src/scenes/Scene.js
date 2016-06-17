@@ -13,6 +13,7 @@ THREE.Scene = function () {
 
 	this.autoUpdate = true; // checked by the renderer
 
+	this.dirty = false;	// checked by the renderer.
 };
 
 THREE.Scene.prototype = Object.create( THREE.Object3D.prototype );
